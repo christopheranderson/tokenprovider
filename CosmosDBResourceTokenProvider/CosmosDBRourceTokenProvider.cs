@@ -129,7 +129,8 @@ namespace CosmosDBResourceTokenProvider
                 Token = permission.Token,
                 Expires = expires ?? 0,
                 UserId = userId,
-                Id = permission.Id
+                Id = permission.Id,
+                ResourceId = permission.ResourceLink,
             };
         }
 
@@ -167,6 +168,8 @@ namespace CosmosDBResourceTokenProvider
         public int Expires { get; set; }
         [JsonProperty(PropertyName = "userid")]
         public string UserId { get; set; }
+        [JsonProperty(PropertyName = "resourceId")]
+        public string ResourceId { get; set; }
     }
 
 }
