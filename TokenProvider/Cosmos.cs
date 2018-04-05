@@ -12,6 +12,8 @@ using System;
 using Microsoft.Azure.Documents;
 using Microsoft.Azure.Documents.Client;
 using System.Collections.Generic;
+using System.Web;
+using System.Net.Http.Headers;
 
 namespace TokenProvider
 {
@@ -28,14 +30,18 @@ namespace TokenProvider
             JwtSecurityToken parsedToken;
             try
             {
-                var token = req.Headers.First(h => h.Key == "token").Value.First() ?? throw new InvalidOperationException();
-                parsedToken = new JwtSecurityToken(token) ?? throw new InvalidOperationException();
-                userId = Cosmos.getUserId(parsedToken) ?? throw new InvalidOperationException();
+                // "x-ms-client-principal-id" is the flag that this is a valid token
+                userId = req.Headers.FirstOrDefault(h => string.Equals(h.Key, "x-ms-client-principal-id",StringComparison.OrdinalIgnoreCase)).Value?.FirstOrDefault() ?? throw new InvalidOperationException("Principal id header was missing");
+                var identifyProvider = req.Headers.FirstOrDefault(h => string.Equals(h.Key, "x-ms-client-principal-idp", StringComparison.OrdinalIgnoreCase)).Value?.FirstOrDefault() ?? throw new InvalidOperationException("Principal ipd header was missing");
+
+                var token = req.Headers.FirstOrDefault(h => string.Equals(h.Key, $"x-ms-token-{identifyProvider}-id-token",StringComparison.OrdinalIgnoreCase)).Value?.FirstOrDefault() ?? throw new InvalidOperationException("token header was missing");
+                parsedToken = new JwtSecurityToken(token) ?? throw new InvalidOperationException("Token was invalid");
             }
             catch (Exception e)
             {
                 log.Error($"Authentication issue", e);
-                return req.CreateErrorResponse(HttpStatusCode.Unauthorized, "Missing or invalid auth token. Reference {context.InvocationId} for details.");
+                log.Info($"Headers {HeadersToString(req.Headers)}");
+                return req.CreateErrorResponse(HttpStatusCode.Unauthorized, $"Could not authenticate user. Reference {context.InvocationId} for details.");
             }
 
             List<PermissionToken> permissionTokens = new List<PermissionToken>();
@@ -45,8 +51,8 @@ namespace TokenProvider
             {
                 foreach (AppPermission p in RolePermissionsMap[role])
                 {
-                    var partitionKey = parsedToken.Claims.Where(c => c.Type == p.partitionKeyPropertyName).FirstOrDefault();
-                    PermissionToken permissionToken = await resourceTokenProvider.GetToken(p.DatabaseId, new Uri(p.ResourceId, UriKind.Relative), role, p.PermissionMode, partitionKey == null ? null : new PartitionKey(partitionKey));
+                    var partitionKey = parsedToken.Claims.Where(c => c.Type == p.PartitionKeyPropertyName).FirstOrDefault()?.Value;
+                    PermissionToken permissionToken = await resourceTokenProvider.GetToken(ResourceTokenProvider.Sanitize(p.ToString()), p.DatabaseId, new Uri(p.ResourceId, UriKind.Relative), role, p.PermissionMode, partitionKey == null ? null : new PartitionKey(partitionKey));
                     log.Info($"User[{userId}] assigned token[{permissionToken.Id}] in role[{role}] with permissions(resource[{p.ResourceId}], PermissionMode[{(p.PermissionMode == PermissionMode.All ? "ALL" : "READ/")}{(partitionKey != null ? $", {partitionKey}" : "")}");
                     permissionTokens.Add(permissionToken);
                 }
@@ -59,10 +65,23 @@ namespace TokenProvider
             }
         }
 
-        private static string getUserId(JwtSecurityToken jwtToken)
+        private static string GetUserId(JwtSecurityToken jwtToken)
         {
             // This only works for AAD for now...
             return jwtToken.Claims.First(c => c.Type == "upn").Value;
+        }
+
+        private static string HeadersToString(HttpRequestHeaders headers)
+        {
+            string output = "";
+            foreach(var h in headers)
+            {
+                foreach (var h2 in h.Value)
+                {
+                    output += $"{h.Key}: {h2.Substring(0, Math.Min(30, h2.Length))}\n";
+                }
+            }
+            return output;
         }
 
         private static Dictionary<string, List<AppPermission>> CreateDefaultRolePermissionMap()
@@ -85,7 +104,15 @@ namespace TokenProvider
                 string[] keys = keysString.Split(';');
                 foreach (string key in keys)
                 {
-                    l.Add(AppPermission.ParseFromString(key));
+                    try
+                    {
+                        string v = Environment.GetEnvironmentVariable(key);
+                        l.Add(AppPermission.ParseFromString(v));
+                    } 
+                    catch (Exception e)
+                    {
+                        // TODO: should probably log or something if there is a bad token
+                    }
                 }
             }
 
@@ -98,7 +125,7 @@ namespace TokenProvider
     {
         public string ResourceId { get; set; }
         public string DatabaseId { get; set; }
-        public string partitionKeyPropertyName { get; set; }
+        public string PartitionKeyPropertyName { get; set; }
         public PermissionMode PermissionMode { get; set; }
 
         public static AppPermission ParseFromString(string permissionString)
@@ -123,7 +150,7 @@ namespace TokenProvider
 
             if (partitionKeySectionTokenStart >= 0 && partitionKeySectionTokenEnd > partitionKeySectionTokenStart)
             {
-                p.ResourceId = permissionString.Substring(partitionKeySectionTokenStart + 1, partitionKeySectionTokenEnd - (partitionKeySectionTokenStart + 1));
+                p.PartitionKeyPropertyName = permissionString.Substring(partitionKeySectionTokenStart + 1, partitionKeySectionTokenEnd - (partitionKeySectionTokenStart + 1));
             }
 
             if (permissionSectionStart >= 0 && permissionSectionEnd > permissionSectionStart)
@@ -133,6 +160,14 @@ namespace TokenProvider
             }
 
             return p;
+        }
+
+        public override string ToString()
+        {
+            var partitionKeySection = !string.IsNullOrEmpty(PartitionKeyPropertyName) ? $"({PartitionKeyPropertyName})" : "";
+            var permissionSection = PermissionMode == PermissionMode.All ? "{All}" : "{Read}";
+
+            return $"{ResourceId}{partitionKeySection}{permissionSection}";
         }
     }
 }

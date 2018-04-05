@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TokenProvider", "TokenProvi
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CosmosDBResourceTokenProvider", "CosmosDBResourceTokenProvider\CosmosDBResourceTokenProvider.csproj", "{D2EEE7C9-2F86-42E0-959C-FB722C78992F}"
 EndProject
+Project("{151D2E53-A2C4-4D7D-83FE-D05416EBD58E}") = "TokenProviderRG", "TokenProviderRG\TokenProviderRG.deployproj", "{20EA2B47-D926-4029-A770-AA13A2F916CA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{D2EEE7C9-2F86-42E0-959C-FB722C78992F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D2EEE7C9-2F86-42E0-959C-FB722C78992F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D2EEE7C9-2F86-42E0-959C-FB722C78992F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{20EA2B47-D926-4029-A770-AA13A2F916CA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{20EA2B47-D926-4029-A770-AA13A2F916CA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{20EA2B47-D926-4029-A770-AA13A2F916CA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{20EA2B47-D926-4029-A770-AA13A2F916CA}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

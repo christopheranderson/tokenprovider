@@ -5,6 +5,7 @@ using System;
 using System.Threading.Tasks;
 using System.Linq;
 using System.Collections.Generic;
+using System.Web;
 
 namespace CosmosDBResourceTokenProvider
 {
@@ -13,8 +14,7 @@ namespace CosmosDBResourceTokenProvider
         private static ResourceTokenProvider _default;
         private static DateTime BeginningOfTime = new DateTime(2017, 1, 1);
         private DocumentClient Client;
-        private List<Permission> permissionsCache;
-        private DateTime cacheExpiry;
+        private Dictionary<string, (DateTime, Permission)> permissionsCache = new Dictionary<string, (DateTime, Permission)>();
 
         public static ResourceTokenProvider GetDefault()
         {
@@ -33,65 +33,101 @@ namespace CosmosDBResourceTokenProvider
             Client = client;
         }
 
-        public async Task<PermissionToken> GetToken(string databaseId, Uri resourceId, string roleName, PermissionMode permissionMode, PartitionKey partitionKey = null, int expireInSeconds = 3600)
+        public async Task<PermissionToken> GetToken(string permissionId, string databaseId, Uri resourceId, string roleName, PermissionMode permissionMode, PartitionKey partitionKey = null, int expireInSeconds = 3600)
         {
-            return await GetOrCreatePermission(databaseId, roleName, resourceId, expireInSeconds, partitionKey, permissionMode);
+            return await GetOrCreatePermission(permissionId, databaseId, roleName, resourceId, expireInSeconds, partitionKey, permissionMode);
         }
 
-        // TODO: This has a race condition where if a permission is requested and it doesn't exist when we pull the query feed, but it get created before we create the permission, it will throw an error. If the client retries, it should work fine.
-        // We should handle "already exists" errors on create gracefully and attempt to read from the feed again, only if it's still missing throw an error.
-        private async Task<PermissionToken> GetOrCreatePermission(string databaseId, string userId, Uri resource, int expireInSeconds, PartitionKey partitionKey = null, PermissionMode permissionMode = PermissionMode.All)
+        private async Task<PermissionToken> GetOrCreatePermission(string permissionId, string databaseId, string userId, Uri resource, int expireInSeconds, PartitionKey partitionKey = null, PermissionMode permissionMode = PermissionMode.All)
         {
             Permission permission = null;
             User user = await CreateUserIfNotExistAsync(databaseId, userId);
             int? expires = null;
 
-            if (permissionsCache != null && cacheExpiry > DateTime.Now)
+            // Check the cache
+            if(permissionsCache.ContainsKey(permissionId))
             {
-                permission = permissionsCache.Where(p => p.ResourceLink == resource.ToString() && partitionKey?.ToString() == p.ResourcePartitionKey?.ToString()).FirstOrDefault();
+                DateTime cacheExpiry;
+                (cacheExpiry, permission) = permissionsCache[permissionId];
                 expires = Convert.ToInt32(cacheExpiry.Subtract(BeginningOfTime).TotalSeconds);
             }
 
+            //// TODO: This doesn't seem to like our special characters, it never finds it
+            //if (permission == null)
+            //{
+            //    try
+            //    {
+            //        var temp = $"dbs/{databaseId}/users/{userId}/permissions/{permissionId}";
+            //        var permissionLink = UriFactory.CreatePermissionUri(databaseId, userId, permissionId);
+            //        permission = await Client.ReadPermissionAsync(temp);
+            //        permissionsCache.Add(permissionId, (DateTime.Now.AddHours(1), permission));
+            //    }
+            //    catch (Exception e)
+            //    {
+            //        // TODO: something useful
+            //    }
+            //}
+
             if (permission == null)
             {
+                try
+                {
+                    // Create a new permission
+                    Permission p;
+                    p = new Permission
+                    {
+                        PermissionMode = permissionMode,
+                        ResourceLink = resource.ToString(),
+                        ResourcePartitionKey = partitionKey, // If not set, everyone can access every document
+                        Id = permissionId ?? Guid.NewGuid().ToString() //needs to be unique for a given user
+                    };
+                    // TODO: Did not like expire time so have disabled
+                    // var ro = new RequestOptions
+                    // {
+                    //     ResourceTokenExpirySeconds = expires
+                    // };
+                    permission = await Client.CreatePermissionAsync(user.SelfLink, p);
+                    expires = Convert.ToInt32(DateTime.UtcNow.Subtract(BeginningOfTime).TotalSeconds) + expireInSeconds;
+                }
+                catch (Exception e)
+                {
+                    // TODO: something useful
+                }
+            }
 
+            // Last option, it's possible that permission already exists on that resource, but with a different name. :(
+            // Look it up from the feed
+            if(permission == null)
+            {
                 // Fetch the latest permission feed for the database and role
                 FeedResponse<Permission> permissionFeed = await Client.ReadPermissionFeedAsync(UriFactory.CreateUserUri(databaseId, user.Id));
                 var permissions = permissionFeed.ToList();
 
-                // Save the permissions list to the in memory cache
-                permissionsCache = permissions;
-                cacheExpiry = DateTime.Now.AddHours(1);
-                
+                // Save the permissions list to the in memory cache so we don't have to do this very often
+                var cacheExpiry = DateTime.Now.AddHours(1);
+                foreach(var p in permissionFeed)
+                {
+                    if(permissionsCache.ContainsKey(p.Id))
+                    {
+                        permissionsCache.Remove(p.Id);
+                    }
+                    permissionsCache.Add(p.Id, (cacheExpiry, p));
+                }
+
                 // Look up the specified permission
                 permission = permissions.Where(p => p.ResourceLink == resource.ToString() && partitionKey?.ToString() == p.ResourcePartitionKey?.ToString()).FirstOrDefault();
                 expires = Convert.ToInt32(DateTime.UtcNow.Subtract(BeginningOfTime).TotalSeconds) + expireInSeconds;
             }
-
-            if (permission == null)
+            
+            if(permission == null)
             {
-                // Create a new permission
-                Permission p;
-                p = new Permission
-                {
-                    PermissionMode = permissionMode,
-                    ResourceLink = resource.ToString(),
-                    ResourcePartitionKey = partitionKey, // If not set, everyone can access every document
-                    Id = Guid.NewGuid().ToString() //needs to be unique for a given user
-                };
-                // TODO: Did not like expire time so have disabled
-                // var ro = new RequestOptions
-                // {
-                //     ResourceTokenExpirySeconds = expires
-                // };
-                permission = await Client.CreatePermissionAsync(user.SelfLink, p);
-                expires = Convert.ToInt32(DateTime.UtcNow.Subtract(BeginningOfTime).TotalSeconds) + expireInSeconds;
+                throw new InvalidOperationException("Could not find or create a permission");
             }
 
             return new PermissionToken()
             {
                 Token = permission.Token,
-                Expires = expires.HasValue ? expires.Value : 0,
+                Expires = expires ?? 0,
                 UserId = userId,
                 Id = permission.Id
             };
@@ -113,6 +149,11 @@ namespace CosmosDBResourceTokenProvider
                 else throw e;
             }
 
+        }
+
+        public static string Sanitize(string input)
+        {
+            return HttpUtility.UrlEncode(input);
         }
     }
 
