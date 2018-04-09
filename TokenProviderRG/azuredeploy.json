@@ -107,7 +107,7 @@
             },
             {
               "name": "WEBSITE_USE_ZIP",
-              "value": "https://tokenprovidersample.blob.core.windows.net/token-provider-sample/tokenProvider.0.0.1.zip"
+              "value": "https://aka.ms/token-provider-sample-v1"
             },
             {
               "name": "WEBSITE_CONTENTSHARE",
